@@ -51,6 +51,7 @@ SECTIONS
 	/* read-only */
 	_text = .;	/* Text and read-only data */
 	.text : {
+		/*. = . + 0x8000; */
 		TEXT_TEXT
 		SCHED_TEXT
 		LOCK_TEXT
@@ -67,7 +68,7 @@ SECTIONS
 	/* Exception table for data bus errors */
 	__dbe_table : {
 		__start___dbe_table = .;
-		*(__dbe_table)
+		KEEP(*(__dbe_table))
 		__stop___dbe_table = .;
 	}
 
@@ -112,7 +113,7 @@ SECTIONS
 	. = ALIGN(4);
 	.mips.machines.init : AT(ADDR(.mips.machines.init) - LOAD_OFFSET) {
 		__mips_machines_start = .;
-		*(.mips.machines.init)
+		KEEP(*(.mips.machines.init))
 		__mips_machines_end = .;
 	}
 

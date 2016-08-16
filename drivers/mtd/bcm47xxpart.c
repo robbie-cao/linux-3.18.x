@@ -15,8 +15,14 @@
 #include <linux/mtd/mtd.h>
 #include <linux/mtd/partitions.h>
 
-/* 10 parts were found on sflash on Netgear WNDR4500 */
-#define BCM47XXPART_MAX_PARTS		12
+#include <uapi/linux/magic.h>
+
+/*
+ * NAND flash on Netgear R6250 was verified to contain 15 partitions.
+ * This will result in allocating too big array for some old devices, but the
+ * memory will be freed soon anyway (see mtd_device_parse_register).
+ */
+#define BCM47XXPART_MAX_PARTS		20
 
 /*
  * Amount of bytes we read when analyzing each block of flash memory.
@@ -32,10 +38,12 @@
 #define NVRAM_HEADER			0x48534C46	/* FLSH */
 #define POT_MAGIC1			0x54544f50	/* POTT */
 #define POT_MAGIC2			0x504f		/* OP */
+#define T_METER_MAGIC			0x4D540000	/* MT */
 #define ML_MAGIC1			0x39685a42
 #define ML_MAGIC2			0x26594131
 #define TRX_MAGIC			0x30524448
-#define SQSH_MAGIC			0x71736873	/* shsq */
+#define SHSQ_MAGIC			0x71736873	/* shsq (weird ZTE H218N endianness) */
+#define UBI_EC_MAGIC			0x23494255	/* UBI# */
 
 struct trx_header {
 	uint32_t magic;
@@ -46,12 +54,62 @@ struct trx_header {
 	uint32_t offset[3];
 } __packed;
 
-static void bcm47xxpart_add_part(struct mtd_partition *part, char *name,
+static void bcm47xxpart_add_part(struct mtd_partition *part, const char *name,
 				 u64 offset, uint32_t mask_flags)
 {
 	part->name = name;
 	part->offset = offset;
 	part->mask_flags = mask_flags;
+}
+
+/*
+ * Calculate real end offset (address) for a given amount of data. It checks
+ * all blocks skipping bad ones.
+ */
+static size_t bcm47xxpart_real_offset(struct mtd_info *master, size_t offset,
+				      size_t bytes)
+{
+	size_t real_offset = offset;
+
+	if (mtd_block_isbad(master, real_offset))
+		pr_warn("Base offset shouldn't be at bad block");
+
+	while (bytes >= master->erasesize) {
+		bytes -= master->erasesize;
+		real_offset += master->erasesize;
+		while (mtd_block_isbad(master, real_offset)) {
+			real_offset += master->erasesize;
+
+			if (real_offset >= master->size)
+				return real_offset - master->erasesize;
+		}
+	}
+
+	real_offset += bytes;
+
+	return real_offset;
+}
+
+static const char *bcm47xxpart_trx_data_part_name(struct mtd_info *master,
+						  size_t offset)
+{
+	uint32_t buf;
+	size_t bytes_read;
+	int err;
+
+	err  = mtd_read(master, offset, sizeof(buf), &bytes_read,
+			(uint8_t *)&buf);
+	if (err && !mtd_is_bitflip(err)) {
+		pr_err("mtd_read error while parsing (offset: 0x%X): %d\n",
+			offset, err);
+		goto out_default;
+	}
+
+	if (buf == UBI_EC_MAGIC)
+		return "ubi";
+
+out_default:
+	return "rootfs";
 }
 
 static int bcm47xxpart_parse(struct mtd_info *master,
@@ -68,9 +126,14 @@ static int bcm47xxpart_parse(struct mtd_info *master,
 	int trx_part = -1;
 	int last_trx_part = -1;
 	int possible_nvram_sizes[] = { 0x8000, 0xF000, 0x10000, };
+	int err;
 
-	if (blocksize <= 0x10000)
-		blocksize = 0x10000;
+	/*
+	 * Some really old flashes (like AT45DB*) had smaller erasesize-s, but
+	 * partitions were aligned to at least 0x1000 anyway.
+	 */
+	if (blocksize < 0x1000)
+		blocksize = 0x1000;
 
 	/* Alloc */
 	parts = kzalloc(sizeof(struct mtd_partition) * BCM47XXPART_MAX_PARTS,
@@ -87,8 +150,8 @@ static int bcm47xxpart_parse(struct mtd_info *master,
 	/* Parse block by block looking for magics */
 	for (offset = 0; offset <= master->size - blocksize;
 	     offset += blocksize) {
-		/* Nothing more in higher memory */
-		if (offset >= 0x2000000)
+		/* Nothing more in higher memory on BCM47XX (MIPS) */
+		if (config_enabled(CONFIG_BCM47XX) && offset >= 0x2000000)
 			break;
 
 		if (curr_part >= BCM47XXPART_MAX_PARTS) {
@@ -97,10 +160,11 @@ static int bcm47xxpart_parse(struct mtd_info *master,
 		}
 
 		/* Read beginning of the block */
-		if (mtd_read(master, offset, BCM47XXPART_BYTES_TO_READ,
-			     &bytes_read, (uint8_t *)buf) < 0) {
-			pr_err("mtd_read error while parsing (offset: 0x%X)!\n",
-			       offset);
+		err = mtd_read(master, offset, BCM47XXPART_BYTES_TO_READ,
+			       &bytes_read, (uint8_t *)buf);
+		if (err && !mtd_is_bitflip(err)) {
+			pr_err("mtd_read error while parsing (offset: 0x%X): %d\n",
+			       offset, err);
 			continue;
 		}
 
@@ -145,8 +209,19 @@ static int bcm47xxpart_parse(struct mtd_info *master,
 			continue;
 		}
 
+		/* T_Meter */
+		if ((le32_to_cpu(buf[0x000 / 4]) & 0xFFFF0000) == T_METER_MAGIC &&
+		    (le32_to_cpu(buf[0x030 / 4]) & 0xFFFF0000) == T_METER_MAGIC &&
+		    (le32_to_cpu(buf[0x060 / 4]) & 0xFFFF0000) == T_METER_MAGIC) {
+			bcm47xxpart_add_part(&parts[curr_part++], "T_Meter", offset,
+					     MTD_WRITEABLE);
+			continue;
+		}
+
 		/* TRX */
 		if (buf[0x000 / 4] == TRX_MAGIC) {
+			uint32_t tmp;
+
 			if (BCM47XXPART_MAX_PARTS - curr_part < 4) {
 				pr_warn("Not enough partitions left to register trx, scanning stopped!\n");
 				break;
@@ -161,25 +236,36 @@ static int bcm47xxpart_parse(struct mtd_info *master,
 			i = 0;
 			/* We have LZMA loader if offset[2] points to sth */
 			if (trx->offset[2]) {
+				tmp = bcm47xxpart_real_offset(master, offset,
+							      trx->offset[i]);
 				bcm47xxpart_add_part(&parts[curr_part++],
-						     "loader",
-						     offset + trx->offset[i],
-						     0);
+						     "loader", tmp, 0);
 				i++;
 			}
 
-			bcm47xxpart_add_part(&parts[curr_part++], "linux",
-					     offset + trx->offset[i], 0);
-			i++;
+			if (trx->offset[i]) {
+				tmp = bcm47xxpart_real_offset(master, offset,
+							      trx->offset[i]);
+				bcm47xxpart_add_part(&parts[curr_part++],
+						     "linux", tmp, 0);
+				i++;
+			}
 
 			/*
 			 * Pure rootfs size is known and can be calculated as:
 			 * trx->length - trx->offset[i]. We don't fill it as
 			 * we want to have jffs2 (overlay) in the same mtd.
 			 */
-			bcm47xxpart_add_part(&parts[curr_part++], "rootfs",
-					     offset + trx->offset[i], 0);
-			i++;
+			if (trx->offset[i]) {
+				const char *name;
+
+				tmp = bcm47xxpart_real_offset(master, offset,
+							      trx->offset[i]);
+				name = bcm47xxpart_trx_data_part_name(master, tmp);
+				bcm47xxpart_add_part(&parts[curr_part++],
+						     name, tmp, 0);
+				i++;
+			}
 
 			last_trx_part = curr_part - 1;
 
@@ -193,7 +279,8 @@ static int bcm47xxpart_parse(struct mtd_info *master,
 		}
 
 		/* Squashfs on devices not using TRX */
-		if (buf[0x000 / 4] == SQSH_MAGIC) {
+		if (le32_to_cpu(buf[0x000 / 4]) == SQUASHFS_MAGIC ||
+		    buf[0x000 / 4] == SHSQ_MAGIC) {
 			bcm47xxpart_add_part(&parts[curr_part++], "rootfs",
 					     offset, 0);
 			continue;
@@ -211,10 +298,11 @@ static int bcm47xxpart_parse(struct mtd_info *master,
 		}
 
 		/* Read middle of the block */
-		if (mtd_read(master, offset + 0x8000, 0x4,
-			     &bytes_read, (uint8_t *)buf) < 0) {
-			pr_err("mtd_read error while parsing (offset: 0x%X)!\n",
-			       offset);
+		err = mtd_read(master, offset + 0x8000, 0x4, &bytes_read,
+			       (uint8_t *)buf);
+		if (err && !mtd_is_bitflip(err)) {
+			pr_err("mtd_read error while parsing (offset: 0x%X): %d\n",
+			       offset, err);
 			continue;
 		}
 
@@ -234,10 +322,11 @@ static int bcm47xxpart_parse(struct mtd_info *master,
 		}
 
 		offset = master->size - possible_nvram_sizes[i];
-		if (mtd_read(master, offset, 0x4, &bytes_read,
-			     (uint8_t *)buf) < 0) {
-			pr_err("mtd_read error while reading at offset 0x%X!\n",
-			       offset);
+		err = mtd_read(master, offset, 0x4, &bytes_read,
+			       (uint8_t *)buf);
+		if (err && !mtd_is_bitflip(err)) {
+			pr_err("mtd_read error while reading (offset 0x%X): %d\n",
+			       offset, err);
 			continue;
 		}
 

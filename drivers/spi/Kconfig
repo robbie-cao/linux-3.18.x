@@ -225,6 +225,15 @@ config SPI_GPIO
 	  GPIO operations, you should be able to leverage that for better
 	  speed with a custom version of this driver; see the source code.
 
+config SPI_GPIO_OLD
+	tristate "Old GPIO API based bitbanging SPI controller (DEPRECATED)"
+	depends on SPI_MASTER && GPIOLIB
+	select SPI_BITBANG
+	help
+	  This code is deprecated. Please use the new mainline SPI-GPIO driver.
+
+	  If unsure, say N.
+
 config SPI_IMX
 	tristate "Freescale i.MX SPI controllers"
 	depends on ARCH_MXC || COMPILE_TEST
@@ -423,6 +432,18 @@ config SPI_QUP
 
 	  This driver can also be built as a module.  If so, the module
 	  will be called spi_qup.
+
+config SPI_RT2880
+	tristate "Ralink RT288x SPI Controller"
+	depends on RALINK
+	help
+	  This selects a driver for the Ralink RT288x/RT305x SPI Controller.
+
+config SPI_MT7621
+	tristate "MediaTek MT7621 SPI Controller"
+	depends on RALINK
+	help
+	  This selects a driver for the MediaTek MT7621 SPI Controller.
 
 config SPI_S3C24XX
 	tristate "Samsung S3C24XX series SPI"

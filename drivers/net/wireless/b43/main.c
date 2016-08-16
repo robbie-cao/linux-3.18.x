@@ -1215,10 +1215,10 @@ void b43_wireless_core_phy_pll_reset(struct b43_wldev *dev)
 	case B43_BUS_BCMA:
 		bcma_cc = &dev->dev->bdev->bus->drv_cc;
 
-		bcma_cc_write32(bcma_cc, BCMA_CC_CHIPCTL_ADDR, 0);
-		bcma_cc_mask32(bcma_cc, BCMA_CC_CHIPCTL_DATA, ~0x4);
-		bcma_cc_set32(bcma_cc, BCMA_CC_CHIPCTL_DATA, 0x4);
-		bcma_cc_mask32(bcma_cc, BCMA_CC_CHIPCTL_DATA, ~0x4);
+		bcma_cc_write32(bcma_cc, BCMA_CC_PMU_CHIPCTL_ADDR, 0);
+		bcma_cc_mask32(bcma_cc, BCMA_CC_PMU_CHIPCTL_DATA, ~0x4);
+		bcma_cc_set32(bcma_cc, BCMA_CC_PMU_CHIPCTL_DATA, 0x4);
+		bcma_cc_mask32(bcma_cc, BCMA_CC_PMU_CHIPCTL_DATA, ~0x4);
 		break;
 #endif
 #ifdef CONFIG_B43_SSB
@@ -4770,7 +4770,7 @@ static void b43_wireless_core_exit(struct b43_wldev *dev)
 	switch (dev->dev->bus_type) {
 #ifdef CONFIG_B43_BCMA
 	case B43_BUS_BCMA:
-		bcma_core_pci_down(dev->dev->bdev->bus);
+		bcma_host_pci_down(dev->dev->bdev->bus);
 		break;
 #endif
 #ifdef CONFIG_B43_SSB
@@ -4817,9 +4817,9 @@ static int b43_wireless_core_init(struct b43_wldev *dev)
 	switch (dev->dev->bus_type) {
 #ifdef CONFIG_B43_BCMA
 	case B43_BUS_BCMA:
-		bcma_core_pci_irq_ctl(&dev->dev->bdev->bus->drv_pci[0],
+		bcma_host_pci_irq_ctl(dev->dev->bdev->bus,
 				      dev->dev->bdev, true);
-		bcma_core_pci_up(dev->dev->bdev->bus);
+		bcma_host_pci_up(dev->dev->bdev->bus);
 		break;
 #endif
 #ifdef CONFIG_B43_SSB

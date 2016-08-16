@@ -226,6 +226,8 @@ static int ehci_platform_probe(struct platform_device *dev)
 		ehci->big_endian_desc = 1;
 	if (pdata->big_endian_mmio)
 		ehci->big_endian_mmio = 1;
+	if (pdata->ignore_oc)
+		ehci->ignore_oc = 1;
 
 #ifndef CONFIG_USB_EHCI_BIG_ENDIAN_MMIO
 	if (ehci->big_endian_mmio) {
@@ -357,6 +359,7 @@ static int ehci_platform_resume(struct device *dev)
 static const struct of_device_id vt8500_ehci_ids[] = {
 	{ .compatible = "via,vt8500-ehci", },
 	{ .compatible = "wm,prizm-ehci", },
+	{ .compatible = "ralink,rt3xxx-ehci", },
 	{ .compatible = "generic-ehci", },
 	{}
 };
