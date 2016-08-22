@@ -64,6 +64,7 @@ Module.symvers
 include/config
 include/generated
 arch/*/include/generated
+user_headers
 
 # stgit generated dirs
 patches-*
